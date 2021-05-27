@@ -29,7 +29,7 @@ use rpc::futures::{Future, future::result};
 use futures::{StreamExt, future::TryFutureExt};
 use sc_rpc_api::DenyUnsafe;
 use jsonrpc_pubsub::{typed::Subscriber, SubscriptionId};
-use jsonrpsee_ws_server::{RpcModule, RpcContextModule, SubscriptionSink, SubscriptionSinkParams};
+use jsonrpsee_ws_server::{RpcModule, RpcContextModule};
 use jsonrpsee_types::error::{Error as JsonRpseeError, CallError as RpseeCallError};
 use codec::{Encode, Decode};
 use sp_core::Bytes;
@@ -56,6 +56,8 @@ pub struct Author<P, Client> {
 	keystore: SyncCryptoStorePtr,
 	/// Whether to deny unsafe calls
 	deny_unsafe: DenyUnsafe,
+	/// Executor to spawn subscriptions.
+	executor: Arc<crate::SubscriptionTaskExecutor>,
 }
 
 
@@ -66,12 +68,14 @@ impl<P, Client> Author<P, Client> {
 		pool: Arc<P>,
 		keystore: SyncCryptoStorePtr,
 		deny_unsafe: DenyUnsafe,
+		executor: Arc<crate::SubscriptionTaskExecutor>,
 	) -> Self {
 		Author {
 			client,
 			pool,
 			keystore,
 			deny_unsafe,
+			executor,
 		}
 	}
 }
@@ -83,10 +87,7 @@ impl<P, Client> Author<P, Client>
 		Client::Api: SessionKeys<P::Block>,
 {
 	/// Convert a [`Author`] to an [`RpcModule`]. Registers all the RPC methods available with the RPC server.
-	pub fn into_rpc_module(self) -> std::result::Result<(RpcModule, AuthorSubSink<P, Client>), JsonRpseeError> {
-		let client = self.client.clone();
-		let pool = self.pool.clone();
-
+	pub fn into_rpc_module(self) -> std::result::Result<RpcModule, JsonRpseeError> {
 		let mut ctx_module = RpcContextModule::new(self);
 
 		ctx_module.register_method("author_insertKey", |params, author| {
@@ -103,7 +104,7 @@ impl<P, Client> Author<P, Client>
 			Ok(())
 		})?;
 
-		ctx_module.register_method::<_, Bytes>("author_rotateKeys", |params, author| {
+		ctx_module.register_method::<Bytes, _>("author_rotateKeys", |params, author| {
 			log::info!("author_rotateKeys [{:?}]", params);
 			author.deny_unsafe.check_if_safe()?;
 
@@ -142,7 +143,7 @@ impl<P, Client> Author<P, Client>
 			Ok(SyncCryptoStore::has_keys(&*author.keystore, &[(public_key, key_type)]))
 		})?;
 
-		ctx_module.register_method::<_, TxHash<P>>("author_submitExtrinsic", |params, author| {
+		ctx_module.register_method::<TxHash<P>, _>("author_submitExtrinsic", |params, author| {
 			log::info!("author_submitExtrinsic [{:?}]", params);
 			// TODO: make is possible to register async methods on jsonrpsee servers.
 			//https://github.com/paritytech/jsonrpsee/issues/291
@@ -162,12 +163,12 @@ impl<P, Client> Author<P, Client>
 					.unwrap_or_else(|e| RpseeCallError::Failed(Box::new(e))))
 		})?;
 
-		ctx_module.register_method::<_, Vec<Bytes>>("author_pendingExtrinsics", |_, author| {
+		ctx_module.register_method::<Vec<Bytes>, _>("author_pendingExtrinsics", |_, author| {
 			log::info!("author_pendingExtrinsics");
 			Ok(author.pool.ready().map(|tx| tx.data().encode().into()).collect())
 		})?;
 
-		ctx_module.register_method::<_, Vec<TxHash<P>>>("author_removeExtrinsic", |params, author| {
+		ctx_module.register_method::<Vec<TxHash<P>>, _>("author_removeExtrinsic", |params, author| {
 			log::info!("author_removeExtrinsic [{:?}]", params);
 			author.deny_unsafe.check_if_safe()?;
 
@@ -191,17 +192,37 @@ impl<P, Client> Author<P, Client>
 			)
 		})?;
 
-		let mut rpc_module = ctx_module.into_module();
-
-		let sink: SubscriptionSinkParams<Bytes> = rpc_module.register_subscription_with_params(
+		ctx_module.register_subscription_with_context(
 			"author_submitAndWatchExtrinsic",
-			"author_unwatchExtrinsic"
-		)?;
+			"author_unwatchExtrinsic",
+			|params, sink, ctx|
+		{
+			let xt: Bytes = params.one()?;
 
-		let sub = AuthorSubSink::new(client, pool, sink);
-		Ok((rpc_module, sub))
+			let executor = ctx.executor.clone();
+			let fut = async move {
+				let best_block_hash = ctx.client.info().best_hash;
+				let dxt = TransactionFor::<P>::decode(&mut &xt[..]).unwrap();
+				let stream = match ctx.pool
+					.submit_and_watch(&generic::BlockId::hash(best_block_hash), TX_SOURCE, dxt)
+					.await {
+					Ok(stream) => stream,
+					// just drop the subscription.
+					Err(_) => return,
+				};
+
+				stream.for_each(|item| {
+					let _ = sink.send(&item);
+					futures::future::ready(())
+				}).await;
+			};
+
+			executor.execute_new(Box::pin(fut));
+			Ok(())
+		}).unwrap();
+
+		Ok(ctx_module.into_module())
 	}
-
 }
 
 /// Currently we treat all RPC transactions as externals.
@@ -317,56 +338,5 @@ impl<P, Client> AuthorApi<TxHash<P>, BlockHash<P>> for Author<P, Client>
 
 	fn unwatch_extrinsic(&self, _metadata: Option<Self::Metadata>, _id: SubscriptionId) -> Result<bool> {
 		todo!("remove");
-	}
-}
-
-
-/// Subscriber to Author RPC API.
-pub struct AuthorSubSink<P, Client> {
-	client: Arc<Client>,
-	xt_sink: SubscriptionSinkParams<Bytes>,
-	pool: Arc<P>
-}
-
-impl<P, Client> AuthorSubSink<P, Client>
-where
-	P: TransactionPool + Sync + Send + 'static,
-	Client: HeaderBackend<P::Block> + ProvideRuntimeApi<P::Block> + Send + Sync + 'static,
-	Client::Api: SessionKeys<P::Block>,
-{
-	/// Create new a Author RPC API subscription.
-	pub fn new(
-		client: Arc<Client>,
-		pool: Arc<P>,
-		xt_sink: SubscriptionSinkParams<Bytes>,
-	) -> Self {
-		Self { client, pool, xt_sink }
-	}
-
-	/// Start `WatchExtrinsic`
-	pub async fn subscribe(self) {
-		loop {
-			let handle = match self.xt_sink.next() {
-				Some(h) => h,
-				None => continue,
-			};
-			let xt = handle.params();
-			let best_block_hash = self.client.info().best_hash;
-			let dxt = TransactionFor::<P>::decode(&mut &xt[..]).unwrap();
-			let stream = match self.pool
-				.submit_and_watch(&generic::BlockId::hash(best_block_hash), TX_SOURCE, dxt)
-				.await {
-				Ok(stream) => stream,
-				// just drop the subscription.
-				Err(_) => continue,
-			};
-
-			// TODO: spawn or do something else because this will block the thread until
-			// the xt_stream has been finished.
-			stream.for_each(|item| {
-				let _ = handle.send(&item);
-				futures::future::ready(())
-			}).await;
-		}
 	}
 }

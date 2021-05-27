@@ -754,26 +754,24 @@ fn gen_rpc_module<TBl, TBackend, TCl, TExPool>(
 		TExPool: MaintainedTransactionPool<Block=TBl, Hash = <TBl as BlockT>::Hash> + 'static,
 {
 
-	let task_executor = sc_rpc::SubscriptionTaskExecutor::new(spawn_handle);
-	let chain = sc_rpc::chain::new_full(client.clone());
+	let task_executor = Arc::new(sc_rpc::SubscriptionTaskExecutor::new(spawn_handle));
+	let chain = sc_rpc::chain::new_full(client.clone(), task_executor.clone());
 	let author = sc_rpc::author::Author::new(
 		client,
 		transaction_pool,
 		keystore,
 		deny_unsafe,
+		task_executor.clone()
 	);
 	// TODO(niklasad1): add remaining RPC API's here
 
 	let mut rpc_api = Vec::new();
 	// TODO: get rid of expect!.
-	let (chain_rpc, chain_sub) = chain.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
-	let (author_rpc, author_sub) = author.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
+	let chain_rpc = chain.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
+	let author_rpc = author.into_rpc_module().expect("TODO: why doesn't gen_handler return Result?");
 
 	rpc_api.push(chain_rpc);
 	rpc_api.push(author_rpc);
-
-	task_executor.execute_new(Box::pin(chain_sub.subscribe()));
-	task_executor.execute_new(Box::pin(author_sub.subscribe()));
 
 	rpc_api
 }
