@@ -93,14 +93,6 @@ impl<B: BlockT> Hash for SeenRequestsKey<B> {
 	}
 }
 
-/// The value of [`BlockRequestHandler::seen_requests`].
-enum SeenRequestsValue {
-	/// First time we have seen the request.
-	First,
-	/// We have fulfilled the request `n` times.
-	Fulfilled(usize),
-}
-
 /// Handler for incoming block requests from a remote peer.
 pub struct BlockRequestHandler<B: BlockT> {
 	client: Arc<dyn Client<B>>,
@@ -108,7 +100,7 @@ pub struct BlockRequestHandler<B: BlockT> {
 	/// Maps from request to number of times we have seen this request.
 	///
 	/// This is used to check if a peer is spamming us with the same request.
-	seen_requests: LruCache<SeenRequestsKey<B>, SeenRequestsValue>,
+	seen_requests: LruCache<SeenRequestsKey<B>, usize>,
 }
 
 impl<B: BlockT> BlockRequestHandler<B> {
@@ -191,8 +183,7 @@ impl<B: BlockT> BlockRequestHandler<B> {
 		let mut reputation_change = None;
 
 		match self.seen_requests.get_mut(&key) {
-			Some(SeenRequestsValue::First) => {},
-			Some(SeenRequestsValue::Fulfilled(ref mut requests)) => {
+			Some(requests) => {
 				*requests = requests.saturating_add(1);
 
 				if *requests > MAX_NUMBER_OF_SAME_REQUESTS_PER_PEER {
@@ -200,7 +191,7 @@ impl<B: BlockT> BlockRequestHandler<B> {
 				}
 			},
 			None => {
-				self.seen_requests.put(key.clone(), SeenRequestsValue::First);
+				self.seen_requests.put(key.clone(), 1);
 			}
 		}
 
@@ -223,21 +214,6 @@ impl<B: BlockT> BlockRequestHandler<B> {
 				max_blocks,
 				support_multiple_justifications,
 			)?;
-
-			// If any of the blocks contains any data, we can consider it as successful request.
-			if block_response
-				.blocks
-				.iter()
-				.any(|b| !b.header.is_empty() || !b.body.is_empty() || b.is_empty_justification)
-			{
-				if let Some(value) = self.seen_requests.get_mut(&key) {
-					// If this is the first time we have processed this request, we need to change
-					// it to `Fulfilled`.
-					if let SeenRequestsValue::First = value {
-						*value = SeenRequestsValue::Fulfilled(1);
-					}
-				}
-			}
 
 			let mut data = Vec::with_capacity(block_response.encoded_len());
 			block_response.encode(&mut data)?;
