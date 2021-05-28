@@ -99,6 +99,34 @@ impl TypeId for PalletId {
 	const TYPE_ID: [u8; 4] = *b"modl";
 }
 
+/// Enum representing pallet parts. Used for declaring the parts exported by the pallet during
+/// macro expansion. `Module`/`Pallet` does not appear as a variant here because it is mandatory
+/// for every pallet.
+#[derive(Clone, Copy, Eq, PartialEq, Encode, Decode)]
+pub enum PalletPart {
+	Call,
+	Config,
+	Event,
+	Inherent,
+	Origin,
+	Storage,
+	ValidateUnsigned,
+}
+
+impl sp_std::fmt::Display for PalletPart {
+	fn fmt(&self, f: &mut sp_std::fmt::Formatter<'_>) -> sp_std::fmt::Result {
+		write!(f, "{}", match self {
+			Self::Call => "Call",
+			Self::Config => "Config",
+			Self::Event => "Event",
+			Self::Inherent => "Inherent",
+			Self::Origin => "Origin",
+			Self::Storage => "Storage",
+			Self::ValidateUnsigned => "ValidateUnsigned",
+		})
+	}
+}
+
 /// Generate a new type alias for [`storage::types::StorageValue`],
 /// [`storage::types::StorageMap`] and [`storage::types::StorageDoubleMap`].
 ///
@@ -1236,7 +1264,7 @@ pub mod pallet_prelude {
 	pub use crate::{
 		EqNoBound, PartialEqNoBound, RuntimeDebugNoBound, DebugNoBound, CloneNoBound, Twox256,
 		Twox128, Blake2_256, Blake2_128, Identity, Twox64Concat, Blake2_128Concat, ensure,
-		RuntimeDebug, storage,
+		RuntimeDebug, PalletPart, storage,
 		traits::{
 			Get, Hooks, IsType, GetPalletVersion, EnsureOrigin, PalletInfoAccess, StorageInfoTrait,
 			ConstU32, GetDefault,
