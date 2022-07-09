@@ -41,19 +41,20 @@ where
 				"host doesn't provide any imports from non-env module: {}:{}",
 				import_ty.module(),
 				name,
-			)))
+			)));
 		}
 
 		match import_ty.ty() {
 			ExternType::Func(func_ty) => {
 				pending_func_imports.insert(name.to_owned(), (import_ty, func_ty));
 			},
-			_ =>
+			_ => {
 				return Err(WasmError::Other(format!(
 					"host doesn't provide any non function imports: {}:{}",
 					import_ty.module(),
 					name,
-				))),
+				)))
+			},
 		};
 	}
 
@@ -80,7 +81,7 @@ where
 			return Err(WasmError::Other(format!(
 				"runtime requires function imports which are not present on the host: {}",
 				names
-			)))
+			)));
 		}
 	}
 
@@ -126,8 +127,6 @@ impl<'a, 'b> sp_wasm_interface::HostFunctionRegistry for Registry<'a, 'b> {
 /// Because we are not using this proposal we could safely unwrap the name.
 /// However, we opt for an error in order to avoid panics at all costs.
 fn import_name<'a, 'b: 'a>(import: &'a ImportType<'b>) -> Result<&'a str, WasmError> {
-	let name = import.name().ok_or_else(|| {
-		WasmError::Other("The module linking proposal is not supported.".to_owned())
-	})?;
+	let name = import.name();
 	Ok(name)
 }

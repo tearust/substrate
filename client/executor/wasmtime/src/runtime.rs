@@ -225,10 +225,12 @@ impl WasmInstance for WasmtimeInstance {
 
 	fn get_global_const(&mut self, name: &str) -> Result<Option<Value>> {
 		match &mut self.strategy {
-			Strategy::FastInstanceReuse { instance_wrapper, .. } =>
-				instance_wrapper.get_global_val(name),
-			Strategy::RecreateInstance(ref mut instance_creator) =>
-				instance_creator.instantiate()?.get_global_val(name),
+			Strategy::FastInstanceReuse { instance_wrapper, .. } => {
+				instance_wrapper.get_global_val(name)
+			},
+			Strategy::RecreateInstance(ref mut instance_creator) => {
+				instance_creator.instantiate()?.get_global_val(name)
+			},
 		}
 	}
 
@@ -239,8 +241,9 @@ impl WasmInstance for WasmtimeInstance {
 				// associated with it.
 				None
 			},
-			Strategy::FastInstanceReuse { instance_wrapper, .. } =>
-				Some(instance_wrapper.base_ptr()),
+			Strategy::FastInstanceReuse { instance_wrapper, .. } => {
+				Some(instance_wrapper.base_ptr())
+			},
 		}
 	}
 }
@@ -317,12 +320,10 @@ fn common_config(semantics: &Semantics) -> std::result::Result<wasmtime::Config,
 
 	// Be clear and specific about the extensions we support. If an update brings new features
 	// they should be introduced here as well.
-	config.wasm_reference_types(false);
 	config.wasm_simd(false);
 	config.wasm_bulk_memory(false);
 	config.wasm_multi_value(false);
 	config.wasm_multi_memory(false);
-	config.wasm_module_linking(false);
 	config.wasm_threads(false);
 	config.wasm_memory64(false);
 
